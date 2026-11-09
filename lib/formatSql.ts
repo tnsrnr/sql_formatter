@@ -80,7 +80,8 @@ export function sanitizeSettings(value: unknown): FormatterSettings {
 }
 
 export function formatOracleSql(sql: string, settings: FormatterSettings): string {
-  const formatted = format(sql, {
+  const masked = maskQuestionMarks(sql);
+  const formatted = format(masked.sql, {
     language: "plsql",
     tabWidth: settings.tabWidth,
     useTabs: false,
@@ -100,7 +101,41 @@ export function formatOracleSql(sql: string, settings: FormatterSettings): strin
   const collapsed = collapseSimpleParenGroups(collapseParenOrs(cased));
   const indented = indentInlineViews(collapsed, settings.tabWidth);
   const packed = packClauseLists(indented, settings.clauseItemsPerLine);
-  return formatSelectColumns(packed, settings.selectItemsPerLine);
+  return restoreQuestionMarks(formatSelectColumns(packed, settings.selectItemsPerLine), masked.count);
+}
+
+/** sql-formatter PL/SQL 토크나이저는 JDBC 자리표시 ? 를 모른다. 바인드로 바꿨다가 결과를 되돌린다. */
+function maskQuestionMarks(sql: string): { sql: string; count: number } {
+  let out = "";
+  let index = 0;
+  let count = 0;
+
+  while (index < sql.length) {
+    const skipped = skipLiteral(sql, index);
+    if (skipped > index) {
+      out += sql.slice(index, skipped);
+      index = skipped;
+      continue;
+    }
+    if (sql[index] === "?") {
+      count += 1;
+      out += `:sqlfmt_param_${count}`;
+      index += 1;
+      continue;
+    }
+    out += sql[index];
+    index += 1;
+  }
+
+  return { sql: out, count };
+}
+
+function restoreQuestionMarks(sql: string, count: number): string {
+  let out = sql;
+  for (let number = 1; number <= count; number += 1) {
+    out = out.replace(new RegExp(`:sqlfmt_param_${number}\\b`, "gi"), "?");
+  }
+  return out;
 }
 
 function collapseParenOrs(sql: string): string {
@@ -602,18 +637,18 @@ function reformatSelectList(list: string, startColumn: number, perLine: number):
     if (index === parts.length - 1) trailing = trail;
     if (!body) return;
 
+    if (containsKeyword(body, "CASE")) {
+      const prepared = containsKeyword(body, "SELECT") ? compactSubqueryCalls(body) : flattenSqlWhitespace(body);
+      pieces.push({ kind: "block", text: expandCases(prepared, startColumn) });
+      return;
+    }
+
     if (containsKeyword(body, "SELECT")) {
       pieces.push({ kind: "block", text: body });
       return;
     }
 
-    const flat = tightenParenSpacing(flattenSqlWhitespace(body));
-    if (containsKeyword(flat, "CASE")) {
-      pieces.push({ kind: "block", text: expandCases(flat, startColumn) });
-      return;
-    }
-
-    pieces.push({ kind: "plain", text: flat });
+    pieces.push({ kind: "plain", text: tightenParenSpacing(flattenSqlWhitespace(body)) });
   });
 
   const rows: string[][] = [];
@@ -854,21 +889,136 @@ function renderCase(parsed: ParsedCase, caseColumn: number): string {
   const lines: string[] = [];
 
   parsed.whens.forEach((when, index) => {
-    const cond = expandCases(flattenSqlWhitespace(when.cond), index === 0 ? caseColumn + beforeWhen.length + when.whenKw.length + 1 : whenColumn + when.whenKw.length + 1);
+    const cond = layoutCasePart(when.cond, index === 0 ? caseColumn + beforeWhen.length + when.whenKw.length + 1 : whenColumn + when.whenKw.length + 1);
     const stem = `${index === 0 ? beforeWhen : whenPad}${when.whenKw} ${cond} ${when.thenKw} `;
     const resultColumn = currentColumn(stem, index === 0 ? caseColumn : 0);
-    const result = expandCases(flattenSqlWhitespace(when.result), resultColumn);
+    const result = layoutCasePart(when.result, resultColumn);
     lines.push(`${stem}${result}`);
   });
 
   if (parsed.elseKw) {
     const stem = `${whenPad}${parsed.elseKw} `;
-    const result = expandCases(flattenSqlWhitespace(parsed.elseResult), stem.length);
+    const result = layoutCasePart(parsed.elseResult, stem.length);
     lines.push(`${stem}${result}`);
   }
 
-  lines.push(`${" ".repeat(caseColumn)}${parsed.endKeyword}`);
+  if (lines.length > 0 && lines[lines.length - 1].includes("\n")) {
+    lines[lines.length - 1] += ` ${parsed.endKeyword}`;
+  } else {
+    lines.push(`${" ".repeat(caseColumn)}${parsed.endKeyword}`);
+  }
   return lines.join("\n");
+}
+
+function layoutCasePart(text: string, column: number): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  if (trimmed.includes("\n") || containsKeyword(trimmed, "SELECT")) return trimmed;
+  return expandCases(flattenSqlWhitespace(trimmed), column);
+}
+
+/** DECODE( (SELECT ...), 1, 'Y', 'N' )처럼 서브쿼리와 짧은 인자가 섞이면 짧은 인자를 서브쿼리 끝에 붙인다. */
+function compactSubqueryCalls(sql: string): string {
+  let out = "";
+  let index = 0;
+
+  while (index < sql.length) {
+    const skipped = skipLiteral(sql, index);
+    if (skipped > index) {
+      out += sql.slice(index, skipped);
+      index = skipped;
+      continue;
+    }
+
+    const previous = index > 0 ? sql[index - 1] : "";
+    const name = !/[A-Za-z0-9_$#]/.test(previous) ? /^[A-Za-z][A-Za-z0-9_$#]*/.exec(sql.slice(index))?.[0] : undefined;
+    if (name) {
+      const open = skipSpaces(sql, index + name.length);
+      if (sql[open] === "(") {
+        const close = findMatchingParen(sql, open);
+        const inner = sql.slice(open + 1, close);
+        const rendered = renderMixedCall(inner);
+        if (rendered) {
+          out += name + rendered;
+          index = close + 1;
+          continue;
+        }
+      }
+    }
+
+    out += sql[index];
+    index += 1;
+  }
+
+  return out;
+}
+
+function renderMixedCall(inner: string): string | null {
+  const args = splitCommaItems(inner).map((item) => item.trim()).filter(Boolean);
+  if (args.length < 2 || !args.some((arg) => containsKeyword(arg, "SELECT"))) return null;
+
+  const lead: string[] = [];
+  let cursor = 0;
+  while (cursor < args.length && !containsKeyword(args[cursor], "SELECT")) {
+    lead.push(flattenSqlWhitespace(args[cursor]));
+    cursor += 1;
+  }
+
+  let body = "(";
+  if (lead.length) body += `${lead.join(",")},`;
+  while (cursor < args.length) {
+    const trailing: string[] = [];
+    let next = cursor + 1;
+    while (next < args.length && !containsKeyword(args[next], "SELECT")) {
+      trailing.push(flattenSqlWhitespace(args[next]));
+      next += 1;
+    }
+    body += formatSubqueryArgument(args[cursor], trailing);
+    cursor = next;
+  }
+
+  const selectIndent = /\n([ \t]*)SELECT\b/i.exec(body)?.[1] ?? "";
+  return `${body}\n${selectIndent})`;
+}
+
+function formatSubqueryArgument(arg: string, trailing: string[]): string {
+  const wrapped = unwrapParens(arg.trim());
+  let inner = (wrapped ?? arg.trim()).replace(/\s+$/, "");
+  if (!inner.startsWith("\n")) inner = `\n${inner}`;
+  const tail = trailing.length ? `,${trailing.join(",")}` : "";
+  return ` (${inner} )${tail}`;
+}
+
+function unwrapParens(text: string): string | null {
+  if (!text.startsWith("(")) return null;
+  const close = findMatchingParen(text, 0);
+  if (close !== text.length - 1) return null;
+  return text.slice(1, close);
+}
+
+function skipSpaces(sql: string, index: number): number {
+  let cursor = index;
+  while (cursor < sql.length && /[ \t\r\n]/.test(sql[cursor])) cursor += 1;
+  return cursor;
+}
+
+function findMatchingParen(sql: string, openIndex: number): number {
+  let depth = 0;
+  let index = openIndex;
+  while (index < sql.length) {
+    const skipped = skipLiteral(sql, index);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    if (sql[index] === "(") depth += 1;
+    else if (sql[index] === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+    index += 1;
+  }
+  return sql.length - 1;
 }
 
 function containsKeyword(sql: string, word: string): boolean {

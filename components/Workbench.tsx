@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import AnalysisPanel from "@/components/AnalysisPanel";
 import {
   defaultSettings,
   formatOracleSql,
@@ -27,6 +28,7 @@ export default function Workbench() {
     text: "쿼리를 넣으면 바로 정렬됩니다.",
   });
   const [copied, setCopied] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
 
   const sourceRef = useRef(source);
   const outputRef = useRef<HTMLTextAreaElement>(null);
@@ -131,7 +133,7 @@ export default function Workbench() {
   const outputCount = output.trim() ? `${output.split("\n").length}줄` : "아직 없음";
 
   return (
-    <main className="app">
+    <main className={analysisOpen ? "app analyzing" : "app"}>
       <header className="top">
         <div className="brand">
           <span className="mark" aria-hidden="true" />
@@ -143,6 +145,14 @@ export default function Workbench() {
           </button>
           <button className="btn" type="button" onClick={clearAll} disabled={!source && !output}>
             비우기
+          </button>
+          <button
+            className={analysisOpen ? "btn analyze on" : "btn analyze"}
+            type="button"
+            aria-pressed={analysisOpen}
+            onClick={() => setAnalysisOpen((open) => !open)}
+          >
+            분석
           </button>
         </div>
       </header>
@@ -245,6 +255,8 @@ export default function Workbench() {
           />
         </div>
       </section>
+
+      {analysisOpen && <AnalysisPanel source={source} onClose={() => setAnalysisOpen(false)} />}
 
       <footer className="status">
         <p className={`message ${message.tone}`} role="status">
