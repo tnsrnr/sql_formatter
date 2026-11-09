@@ -101,7 +101,29 @@ export function formatOracleSql(sql: string, settings: FormatterSettings): strin
   const collapsed = collapseSimpleParenGroups(collapseParenOrs(cased));
   const indented = indentInlineViews(collapsed, settings.tabWidth);
   const packed = packClauseLists(indented, settings.clauseItemsPerLine);
-  return restoreQuestionMarks(formatSelectColumns(packed, settings.selectItemsPerLine), masked.count);
+  const restored = restoreQuestionMarks(formatSelectColumns(packed, settings.selectItemsPerLine), masked.count);
+  return collapseBlockComments(restored);
+}
+
+/** 블록 주석 안의 줄바꿈을 없애 한 줄로 붙인다. 문자열 안의 주석 모양은 그대로 둔다. */
+function collapseBlockComments(sql: string): string {
+  let out = "";
+  let index = 0;
+
+  while (index < sql.length) {
+    const skipped = skipLiteral(sql, index);
+    if (skipped > index) {
+      const chunk = sql.slice(index, skipped);
+      out += sql.startsWith("/*", index) ? chunk.replace(/\s+/g, " ") : chunk;
+      index = skipped;
+      continue;
+    }
+
+    out += sql[index];
+    index += 1;
+  }
+
+  return out;
 }
 
 /** sql-formatter PL/SQL 토크나이저는 JDBC 자리표시 ? 를 모른다. 바인드로 바꿨다가 결과를 되돌린다. */
