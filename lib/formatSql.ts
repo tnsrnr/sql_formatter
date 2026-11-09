@@ -80,29 +80,295 @@ export function sanitizeSettings(value: unknown): FormatterSettings {
 }
 
 export function formatOracleSql(sql: string, settings: FormatterSettings): string {
-  const masked = maskQuestionMarks(sql);
-  const formatted = format(masked.sql, {
-    language: "plsql",
+  try {
+    const masked = maskQuestionMarks(sql);
+    const pieces = collectPieces(masked.sql, settings);
+    let out = "";
+    for (const piece of pieces) {
+      out = joinParts(out, piece.polish ? polish(piece.text, settings) : piece.text);
+    }
+    return collapseBlockComments(restoreQuestionMarks(out, masked.count));
+  } catch {
+    return sql;
+  }
+}
+
+function formatOptions(settings: FormatterSettings) {
+  return {
+    language: "plsql" as const,
     tabWidth: settings.tabWidth,
     useTabs: false,
     keywordCase: settings.letterCase,
     identifierCase: settings.letterCase,
     dataTypeCase: settings.letterCase,
     functionCase: settings.letterCase,
-    indentStyle: "tabularRight",
-    logicalOperatorNewline: "before",
+    indentStyle: "tabularRight" as const,
+    logicalOperatorNewline: "before" as const,
     expressionWidth: settings.expressionWidth,
     linesBetweenQueries: 1,
     denseOperators: false,
     newlineBeforeSemicolon: false,
-  });
+  };
+}
 
-  const cased = applyExtraOracleWords(formatted, settings.letterCase);
+type FormatAttempt = { ok: true; text: string } | { ok: false; index: number | null };
+
+type Piece = { text: string; polish: boolean };
+
+/**
+ * 한 번에 읽히지 않는 쿼리도 맞출 수 있는 조각까지 정렬한다.
+ * 깨진 토큰은 지우지 않고 그 자리에 둔다.
+ */
+function collectPieces(sql: string, settings: FormatterSettings): Piece[] {
+  const pieces: Piece[] = [];
+  let remaining = sql;
+  let guard = 0;
+
+  while (remaining.length > 0 && guard < 200) {
+    guard += 1;
+    if (!remaining.trim()) {
+      pieces.push({ text: remaining, polish: false });
+      break;
+    }
+
+    const attempt = attemptPiece(remaining, settings);
+    if (attempt.ok) {
+      pieces.push({ text: attempt.text, polish: true });
+      break;
+    }
+
+    const errorAt = attempt.index ?? 0;
+    let split = errorAt > 0 ? largestParseablePrefix(remaining, errorAt, settings) : 0;
+    if (split > 0) {
+      const cut = cutDanglingOperator(remaining, split);
+      if (cut < split) {
+        if (cut > 0 && attemptPiece(remaining.slice(0, cut), settings).ok) split = cut;
+        else if (cut === 0) split = 0;
+      }
+    }
+    if (split > 0 && split < remaining.length) {
+      const head = attemptPiece(remaining.slice(0, split), settings);
+      if (head.ok) {
+        pieces.push({ text: head.text, polish: true });
+        remaining = remaining.slice(split);
+        continue;
+      }
+    }
+
+    const brokenEnd = consumeBroken(remaining, errorAt);
+    if (brokenEnd <= 0) {
+      pieces.push({ text: remaining, polish: false });
+      break;
+    }
+    pieces.push({ text: remaining.slice(0, brokenEnd), polish: false });
+    remaining = remaining.slice(brokenEnd);
+  }
+
+  if (remaining.length > 0 && guard >= 200) pieces.push({ text: remaining, polish: false });
+  return pieces;
+}
+
+function attemptFormat(sql: string, settings: FormatterSettings): FormatAttempt {
+  try {
+    return { ok: true, text: format(sql, formatOptions(settings)) };
+  } catch (error) {
+    return { ok: false, index: parseErrorIndex(error, sql) };
+  }
+}
+
+function attemptPiece(sql: string, settings: FormatterSettings): FormatAttempt {
+  const direct = attemptFormat(sql, settings);
+  if (direct.ok) return direct;
+
+  const leading = sql.length - sql.trimStart().length;
+  const body = sql.slice(leading).trimEnd();
+  const kind = fragmentKind(body);
+  if (!kind) return direct;
+
+  const wrapped = kind.prefix + body;
+  const attempt = attemptFormat(wrapped, settings);
+  if (!attempt.ok) {
+    if (attempt.index == null) return direct;
+    const mapped = attempt.index - kind.prefix.length + leading;
+    return { ok: false, index: mapped < leading ? leading : Math.min(sql.length, mapped) };
+  }
+
+  const text = unwrapAfter(attempt.text, kind.marker, kind.occurrence, kind.expect);
+  return text == null ? direct : { ok: true, text };
+}
+
+type FragmentKind = { prefix: string; marker: string; occurrence: number; expect: RegExp };
+
+function fragmentKind(body: string): FragmentKind | null {
+  if (/^(AND|OR)\b/i.test(body)) {
+    return {
+      prefix: "SELECT * FROM SQLFMT_ANCHOR WHERE SQLFMT_KEEP = SQLFMT_KEEP ",
+      marker: "SQLFMT_KEEP",
+      occurrence: 2,
+      expect: /^\s*(AND|OR)\b/i,
+    };
+  }
+  if (/^(WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|CONNECT\s+BY|START\s+WITH)\b/i.test(body)) {
+    return {
+      prefix: "SELECT * FROM SQLFMT_ANCHOR ",
+      marker: "SQLFMT_ANCHOR",
+      occurrence: 1,
+      expect: /^\s*(WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|CONNECT\s+BY|START\s+WITH)\b/i,
+    };
+  }
+  if (body.startsWith(",")) {
+    return {
+      prefix: "SELECT SQLFMT_KEEP ",
+      marker: "SQLFMT_KEEP",
+      occurrence: 1,
+      expect: /^\s*,/,
+    };
+  }
+  return null;
+}
+
+function unwrapAfter(formatted: string, marker: string, occurrence: number, expect: RegExp): string | null {
+  const lower = formatted.toLowerCase();
+  const needle = marker.toLowerCase();
+  let from = 0;
+  for (let count = 0; count < occurrence; count += 1) {
+    const found = lower.indexOf(needle, from);
+    if (found < 0) return null;
+    from = found + needle.length;
+  }
+
+  const rest = formatted.slice(from).replace(/^[ \t]*\n/, "").replace(/\s+$/, "");
+  if (!expect.test(rest)) return null;
+  return rest;
+}
+
+/** 깨진 괄호 바로 앞의 연산자는 앞 문장에 붙이지 않고 `+)`처럼 원문 그대로 남긴다. */
+function cutDanglingOperator(sql: string, split: number): number {
+  let end = split;
+
+  while (end > 0) {
+    let index = 0;
+    let tokenStart = -1;
+    while (index < end) {
+      const next = nextTokenEnd(sql, index);
+      if (next <= index) break;
+      const whitespace = next === index + 1 && /\s/.test(sql[index]);
+      if (!whitespace && next === end) tokenStart = index;
+      index = next;
+    }
+    if (tokenStart < 0) break;
+    const token = sql.slice(tokenStart, end);
+    if (!/^[=<>!+\-*/|&]+$/.test(token)) break;
+    end = tokenStart;
+    while (end > 0 && /\s/.test(sql[end - 1])) end -= 1;
+  }
+
+  return end;
+}
+
+function largestParseablePrefix(sql: string, errorAt: number, settings: FormatterSettings): number {
+  const ends = boundaryEnds(sql, errorAt);
+  let tried = 0;
+  for (let index = ends.length - 1; index >= 0 && tried < 24; index -= 1) {
+    tried += 1;
+    const end = ends[index];
+    if (end <= 0) continue;
+    if (attemptPiece(sql.slice(0, end), settings).ok) return end;
+  }
+  return 0;
+}
+
+function boundaryEnds(sql: string, limit: number): number[] {
+  const ends: number[] = [];
+  let index = 0;
+
+  while (index < limit) {
+    const end = nextTokenEnd(sql, index);
+    if (end <= index) break;
+    const whitespace = end === index + 1 && /\s/.test(sql[index]);
+    if (!whitespace) {
+      if (end > limit) break;
+      ends.push(end);
+    }
+    if (end > limit) break;
+    index = end;
+  }
+
+  return ends;
+}
+
+function consumeBroken(sql: string, errorAt: number): number {
+  let index = 0;
+  let end = 0;
+
+  while (index < sql.length) {
+    const next = nextTokenEnd(sql, index);
+    if (next <= index) return end;
+    const whitespace = next === index + 1 && /\s/.test(sql[index]);
+    if (!whitespace) end = next;
+    if (next > errorAt && end > 0) return end;
+    index = next;
+  }
+
+  return end;
+}
+
+function nextTokenEnd(sql: string, index: number): number {
+  const skipped = skipLiteral(sql, index);
+  if (skipped > index) return skipped;
+  if (index >= sql.length) return index;
+  if (/\s/.test(sql[index])) return index + 1;
+  if (/[A-Za-z0-9_$#]/.test(sql[index])) {
+    const word = /^[A-Za-z0-9_$#]+/.exec(sql.slice(index));
+    return index + (word?.[0].length ?? 1);
+  }
+  const two = sql.slice(index, index + 2);
+  if (two === "!=" || two === "<>" || two === "<=" || two === ">=" || two === "||" || two === ":=") {
+    return index + 2;
+  }
+  return index + 1;
+}
+
+function parseErrorIndex(error: unknown, sql: string): number | null {
+  if (!(error instanceof Error)) return null;
+  const start = /"start"\s*:\s*(\d+)/.exec(error.message);
+  if (start) {
+    const index = Number(start[1]);
+    if (index >= 0 && index <= sql.length) return index;
+  }
+
+  const lineCol = /line (\d+) column (\d+)/i.exec(error.message);
+  if (!lineCol) return null;
+  const line = Number(lineCol[1]);
+  const column = Number(lineCol[2]);
+  let current = 1;
+  let index = 0;
+  while (index < sql.length && current < line) {
+    if (sql[index] === "\n") current += 1;
+    index += 1;
+  }
+  return Math.min(sql.length, index + Math.max(0, column - 1));
+}
+
+function joinParts(head: string, tail: string): string {
+  if (!head) return tail;
+  if (!tail) return head;
+  if (/^[ \t]*[^\s\w]/.test(tail)) {
+    const base = head.replace(/[ \t]*$/, "").replace(/\n$/, "");
+    const gap = /^[ \t]/.test(tail) ? "" : " ";
+    return `${base}${gap}${tail.replace(/^[ \t]+/, " ")}`;
+  }
+  const left = head.replace(/[ \t]+$/, "").replace(/\n+$/, "\n");
+  const right = tail.replace(/^\n+/, "");
+  return left.endsWith("\n") ? `${left}${right}` : `${left}\n${right}`;
+}
+
+function polish(sql: string, settings: FormatterSettings): string {
+  const cased = applyExtraOracleWords(sql, settings.letterCase);
   const collapsed = collapseSimpleParenGroups(collapseParenOrs(cased));
   const indented = indentInlineViews(collapsed, settings.tabWidth);
   const packed = packClauseLists(indented, settings.clauseItemsPerLine);
-  const restored = restoreQuestionMarks(formatSelectColumns(packed, settings.selectItemsPerLine), masked.count);
-  return collapseBlockComments(restored);
+  return formatSelectColumns(packed, settings.selectItemsPerLine);
 }
 
 /** 블록 주석 안의 줄바꿈을 없애 한 줄로 붙인다. 문자열 안의 주석 모양은 그대로 둔다. */
