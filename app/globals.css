@@ -326,8 +326,17 @@ textarea:focus-visible {
   gap: 16px;
   align-items: center;
   min-height: 38px;
+  max-height: 38px;
+  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
+}
+
+.status .message {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .status p {

@@ -51,8 +51,7 @@ export default function Workbench() {
       const lines = next.split("\n").length;
       setMessage({ tone: "ok", text: `${lines}줄로 정렬했습니다.` });
     } catch (error) {
-      const text = error instanceof Error ? error.message : "정렬하지 못했습니다.";
-      setMessage({ tone: "error", text });
+      setMessage({ tone: "error", text: formatFailure(error) });
     }
   };
 
@@ -326,6 +325,13 @@ function Segmented<T extends string>({
       </div>
     </fieldset>
   );
+}
+
+function formatFailure(error: unknown): string {
+  const raw = error instanceof Error ? error.message : "";
+  const first = raw.split(/Expecting|\n/)[0]?.replace(/\s+/g, " ").trim() ?? "";
+  if (!first || first.length > 160) return "이 구문은 정렬하지 못했습니다.";
+  return `이 구문은 정렬하지 못했습니다. ${first}`;
 }
 
 function readSettings(): FormatterSettings {
