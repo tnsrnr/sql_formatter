@@ -6,10 +6,10 @@ import {
   defaultSettings,
   formatOracleSql,
   sanitizeSettings,
-  type ExpressionWidth,
   type FormatterSettings,
   type ItemsPerLine,
 } from "@/lib/formatSql";
+import { skeletonSql } from "@/lib/skeletonSql";
 const SETTINGS_KEY = "query-align.settings.v3";
 
 type Message = {
@@ -45,7 +45,11 @@ export default function Workbench() {
     }
 
     try {
-      const next = formatOracleSql(sql, current);
+      const next = formatOracleSql(sql, {
+        ...current,
+        tabWidth: defaultSettings.tabWidth,
+        expressionWidth: defaultSettings.expressionWidth,
+      });
       setOutput(next);
       const lines = next.split("\n").length;
       setMessage({ tone: "ok", text: `${lines}줄로 정렬했습니다.` });
@@ -97,6 +101,19 @@ export default function Workbench() {
     formatRef.current(next, settings);
   }
 
+  function showSkeleton() {
+    const sql = sourceRef.current;
+    if (!sql.trim()) {
+      setOutput("");
+      setMessage({ tone: "idle", text: "쿼리를 넣으면 구조를 보여 줍니다." });
+      return;
+    }
+    const next = skeletonSql(sql, settings.letterCase);
+    setOutput(next);
+    const lines = next ? next.split("\n").length : 0;
+    setMessage({ tone: "ok", text: lines ? `${lines}줄 구조로 줄였습니다.` : "보여줄 구조가 없습니다." });
+  }
+
   function clearAll() {
     setSource("");
     setOutput("");
@@ -136,6 +153,9 @@ export default function Workbench() {
           <button className="btn" type="button" onClick={clearAll} disabled={!source && !output}>
             비우기
           </button>
+          <button className="btn analyze" type="button" onClick={showSkeleton} disabled={!source.trim()}>
+            구조분석
+          </button>
           <button
             className={analysisOpen ? "btn analyze on" : "btn analyze"}
             type="button"
@@ -171,35 +191,6 @@ export default function Workbench() {
           value={settings.clauseItemsPerLine}
           onChange={(clauseItemsPerLine) => updateSettings({ clauseItemsPerLine })}
         />
-        <Segmented
-          name="tabWidth"
-          legend="간격"
-          value={String(settings.tabWidth)}
-          options={[
-            { value: "0", label: "0" },
-            { value: "1", label: "1" },
-            { value: "2", label: "2" },
-            { value: "4", label: "4" },
-          ]}
-          onChange={(value) => {
-            const width = Number(value);
-            if (width === 0 || width === 1 || width === 2 || width === 4) {
-              updateSettings({ tabWidth: width });
-            }
-          }}
-        />
-        <Segmented
-          name="expressionWidth"
-          legend="줄 길이"
-          value={String(settings.expressionWidth)}
-          options={[
-            { value: "10", label: "10" },
-            { value: "50", label: "50" },
-            { value: "80", label: "80" },
-            { value: "120", label: "120" },
-          ]}
-          onChange={(value) => updateSettings({ expressionWidth: Number(value) as ExpressionWidth })}
-        />
         <button className="reset" type="button" onClick={() => setSettings({ ...defaultSettings })}>
           기본값
         </button>
@@ -219,7 +210,7 @@ export default function Workbench() {
             autoCorrect="off"
             autoCapitalize="off"
             wrap="off"
-            style={{ tabSize: settings.tabWidth }}
+            style={{ tabSize: defaultSettings.tabWidth }}
             onChange={(event) => {
               const next = event.target.value;
               setSource(next);
@@ -241,7 +232,7 @@ export default function Workbench() {
             placeholder="정렬된 쿼리가 여기에 표시됩니다."
             spellCheck={false}
             wrap="off"
-            style={{ tabSize: settings.tabWidth }}
+            style={{ tabSize: defaultSettings.tabWidth }}
           />
         </div>
       </section>
