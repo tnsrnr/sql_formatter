@@ -11,7 +11,6 @@ import {
   type ItemsPerLine,
 } from "@/lib/formatSql";
 const SETTINGS_KEY = "query-align.settings.v3";
-const SOURCE_KEY = "query-align.source.v1";
 
 type Message = {
   tone: "idle" | "ok" | "error";
@@ -56,11 +55,7 @@ export default function Workbench() {
   };
 
   useEffect(() => {
-    const loadedSettings = readSettings();
-    const loadedSource = readSource();
-    setSettings(loadedSettings);
-    setSource(loadedSource);
-    if (loadedSource.trim()) formatRef.current(loadedSource, loadedSettings);
+    setSettings(readSettings());
     setReady(true);
   }, []);
 
@@ -80,11 +75,6 @@ export default function Workbench() {
   }, [settings, ready]);
 
   useEffect(() => {
-    if (!ready) return;
-    persist(SOURCE_KEY, source);
-  }, [source, ready]);
-
-  useEffect(() => {
     return () => {
       if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
     };
@@ -99,9 +89,10 @@ export default function Workbench() {
     if (!pasted) return;
     event.preventDefault();
     const target = event.currentTarget;
-    const start = target.selectionStart ?? source.length;
-    const end = target.selectionEnd ?? source.length;
-    const next = source.slice(0, start) + pasted + source.slice(end);
+    const replacing = /^\s*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE)\b/i.test(pasted);
+    const start = target.selectionStart ?? target.value.length;
+    const end = target.selectionEnd ?? target.value.length;
+    const next = replacing ? pasted : target.value.slice(0, start) + pasted + target.value.slice(end);
     setSource(next);
     formatRef.current(next, settings);
   }
@@ -341,14 +332,6 @@ function readSettings(): FormatterSettings {
     return sanitizeSettings(JSON.parse(raw));
   } catch {
     return { ...defaultSettings };
-  }
-}
-
-function readSource(): string {
-  try {
-    return localStorage.getItem(SOURCE_KEY) ?? "";
-  } catch {
-    return "";
   }
 }
 
