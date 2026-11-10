@@ -477,3 +477,36 @@ kbd {
   color: var(--table);
   font-weight: 700;
 }
+
+.insert-head {
+  margin-bottom: 12px;
+  font-weight: 700;
+}
+
+.insert-block + .insert-block {
+  margin-top: 16px;
+}
+
+.insert-row-label,
+.insert-pair-head {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.insert-pair {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 22px;
+  align-items: start;
+}
+
+.insert-col {
+  color: var(--table);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.insert-val {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

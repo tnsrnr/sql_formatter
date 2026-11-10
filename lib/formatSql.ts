@@ -1,4 +1,5 @@
 import { format, type KeywordCase } from "sql-formatter";
+import { alignInsert } from "./insertSql";
 
 export type LetterCase = KeywordCase;
 export type ExpressionWidth = 10 | 50 | 80 | 120;
@@ -91,6 +92,12 @@ export function sanitizeSettings(value: unknown): FormatterSettings {
 export function formatOracleSql(sql: string, settings: FormatterSettings): string {
   try {
     const masked = maskQuestionMarks(sql);
+    const aligned = alignInsert(masked.sql, settings.letterCase, (query) => formatOracleSql(query, settings));
+    if (aligned) {
+      const rest = masked.sql.slice(aligned.end);
+      const tail = rest.trim() ? formatOracleSql(rest, settings) : "";
+      return collapseBlockComments(restoreQuestionMarks(joinParts(aligned.text, tail), masked.count));
+    }
     const pieces = collectPieces(masked.sql, settings);
     let out = "";
     for (const piece of pieces) {

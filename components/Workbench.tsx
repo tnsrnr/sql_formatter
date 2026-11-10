@@ -229,7 +229,7 @@ export default function Workbench() {
             <span>{view === "result" ? outputCount : ""}</span>
           </div>
           {view === "skeleton" ? (
-            <AnalysisPanel source={source} letterCase={settings.letterCase} onClose={() => setView("result")} />
+            <AnalysisPanel source={source} settings={settings} onClose={() => setView("result")} />
           ) : (
             <RegionPanel sql={output} />
           )}

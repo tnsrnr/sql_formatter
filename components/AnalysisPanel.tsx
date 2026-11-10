@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, type CSSProperties } from "react";
-import type { LetterCase } from "@/lib/formatSql";
+import { formatOracleSql, type FormatterSettings } from "@/lib/formatSql";
 import { depthLook } from "@/lib/depthStyle";
+import { insertColumnMap } from "@/lib/insertSql";
 import { SKELETON_INDENT, skeletonSql } from "@/lib/skeletonSql";
 
 const CLAUSE = new Set([
@@ -35,21 +36,30 @@ const CLAUSE = new Set([
 
 export default function AnalysisPanel({
   source,
-  letterCase,
+  settings,
   onClose,
 }: {
   source: string;
-  letterCase: LetterCase;
+  settings: FormatterSettings;
   onClose: () => void;
 }) {
-  const skeleton = useMemo(() => {
-    if (!source.trim()) return "";
+  const insertMap = useMemo(() => {
+    if (!source.trim()) return null;
     try {
-      return skeletonSql(source, letterCase);
+      return insertColumnMap(source, settings.letterCase, (query) => formatOracleSql(query, settings));
+    } catch {
+      return null;
+    }
+  }, [source, settings]);
+
+  const skeleton = useMemo(() => {
+    if (insertMap || !source.trim()) return "";
+    try {
+      return skeletonSql(source, settings.letterCase);
     } catch {
       return "";
     }
-  }, [source, letterCase]);
+  }, [insertMap, source, settings.letterCase]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -58,6 +68,29 @@ export default function AnalysisPanel({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  if (insertMap) {
+    return (
+      <div className="analysis insert-map" aria-label="쿼리 분석">
+        <div className="insert-head">INSERT INTO {insertMap.table}</div>
+        {insertMap.rows.map((pairs, rowIndex) => (
+          <div className="insert-block" key={rowIndex}>
+            {insertMap.rows.length > 1 ? <div className="insert-row-label">{rowIndex + 1}행</div> : null}
+            <div className="insert-pair insert-pair-head">
+              <span>컬럼</span>
+              <span>값</span>
+            </div>
+            {pairs.map((pair, index) => (
+              <div className="insert-pair" key={index}>
+                <span className="insert-col">{pair.column || " "}</span>
+                <span className="insert-val">{pair.value || " "}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   if (!skeleton) {
     return <p className="analysis-empty">쿼리를 넣으면 전체 구조를 보여 줍니다.</p>;
