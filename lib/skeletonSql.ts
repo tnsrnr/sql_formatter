@@ -41,6 +41,8 @@ const RESERVED = new Set([
   "MERGE",
 ]);
 
+export const SKELETON_INDENT = 8;
+
 /** 컬럼·조건은 빼고 SELECT/FROM/WHERE 같은 뼈대와 테이블 이름만 남긴다. */
 export function skeletonSql(sql: string, letterCase: LetterCase = "upper"): string {
   const parser = new SkeletonParser(tokenize(sql), letterCase);
@@ -142,7 +144,7 @@ class SkeletonParser {
       first = false;
       this.parseQuery(depth + 1);
       if (this.tokens[this.index]?.text === ")") this.index += 1;
-      this.lines.push(depth === 0 ? ")" : `${" ".repeat(Math.max(0, this.parenColumn(depth)))})`);
+      this.lines.push(`${this.indent(depth)})`);
       if (this.tokens[this.index]?.text === ",") {
         this.commaLast();
         this.index += 1;
@@ -398,14 +400,12 @@ class SkeletonParser {
     this.lines[this.lines.length - 1] = `${this.lines[this.lines.length - 1].replace(/\s+$/, "")},`;
   }
 
-  private pad(depth: number, keyword: string): string {
-    const shown = this.show(keyword);
-    const column = 6 + depth * 4;
-    return `${" ".repeat(Math.max(0, column - shown.length))}${shown}`;
+  private indent(depth: number): string {
+    return " ".repeat(Math.max(0, depth) * SKELETON_INDENT);
   }
 
-  private parenColumn(depth: number): number {
-    return 6 + depth * 4 - 1;
+  private pad(depth: number, keyword: string): string {
+    return `${this.indent(depth)}${this.show(keyword)}`;
   }
 
   private show(text: string): string {

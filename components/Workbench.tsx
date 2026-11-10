@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import AnalysisPanel from "@/components/AnalysisPanel";
+import RegionPanel from "@/components/RegionPanel";
 import {
   defaultSettings,
   formatOracleSql,
@@ -9,7 +10,6 @@ import {
   type FormatterSettings,
   type ItemsPerLine,
 } from "@/lib/formatSql";
-import { skeletonSql } from "@/lib/skeletonSql";
 const SETTINGS_KEY = "query-align.settings.v3";
 
 type Message = {
@@ -27,10 +27,9 @@ export default function Workbench() {
     text: "쿼리를 넣으면 바로 정렬됩니다.",
   });
   const [copied, setCopied] = useState(false);
-  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [view, setView] = useState<"result" | "skeleton">("result");
 
   const sourceRef = useRef(source);
-  const outputRef = useRef<HTMLTextAreaElement>(null);
   const copyTimer = useRef<number | null>(null);
   const skipSettings = useRef(true);
 
@@ -62,6 +61,10 @@ export default function Workbench() {
     setSettings(readSettings());
     setReady(true);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = settings.theme;
+  }, [settings.theme]);
 
   useEffect(() => {
     if (!ready) return;
@@ -101,19 +104,6 @@ export default function Workbench() {
     formatRef.current(next, settings);
   }
 
-  function showSkeleton() {
-    const sql = sourceRef.current;
-    if (!sql.trim()) {
-      setOutput("");
-      setMessage({ tone: "idle", text: "쿼리를 넣으면 구조를 보여 줍니다." });
-      return;
-    }
-    const next = skeletonSql(sql, settings.letterCase);
-    setOutput(next);
-    const lines = next ? next.split("\n").length : 0;
-    setMessage({ tone: "ok", text: lines ? `${lines}줄 구조로 줄였습니다.` : "보여줄 구조가 없습니다." });
-  }
-
   function clearAll() {
     setSource("");
     setOutput("");
@@ -125,11 +115,12 @@ export default function Workbench() {
     try {
       await navigator.clipboard.writeText(output);
     } catch {
-      const area = outputRef.current;
-      if (!area) return;
-      area.focus();
+      const area = document.createElement("textarea");
+      area.value = output;
+      document.body.appendChild(area);
       area.select();
       document.execCommand("copy");
+      area.remove();
     }
     setCopied(true);
     if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
@@ -140,7 +131,7 @@ export default function Workbench() {
   const outputCount = output.trim() ? `${output.split("\n").length}줄` : "아직 없음";
 
   return (
-    <main className={analysisOpen ? "app analyzing" : "app"}>
+    <main className="app">
       <header className="top">
         <div className="brand">
           <span className="mark" aria-hidden="true" />
@@ -153,14 +144,11 @@ export default function Workbench() {
           <button className="btn" type="button" onClick={clearAll} disabled={!source && !output}>
             비우기
           </button>
-          <button className="btn analyze" type="button" onClick={showSkeleton} disabled={!source.trim()}>
-            구조분석
-          </button>
           <button
-            className={analysisOpen ? "btn analyze on" : "btn analyze"}
+            className={view === "skeleton" ? "btn analyze on" : "btn analyze"}
             type="button"
-            aria-pressed={analysisOpen}
-            onClick={() => setAnalysisOpen((open) => !open)}
+            aria-pressed={view === "skeleton"}
+            onClick={() => setView((current) => (current === "skeleton" ? "result" : "skeleton"))}
           >
             분석
           </button>
@@ -186,10 +174,26 @@ export default function Workbench() {
           onChange={(selectItemsPerLine) => updateSettings({ selectItemsPerLine })}
         />
         <ItemCount
+          name="fromItemsPerLine"
+          legend="FROM"
+          value={settings.fromItemsPerLine}
+          onChange={(fromItemsPerLine) => updateSettings({ fromItemsPerLine })}
+        />
+        <ItemCount
           name="clauseItemsPerLine"
           legend="GROUP BY / ORDER BY"
           value={settings.clauseItemsPerLine}
           onChange={(clauseItemsPerLine) => updateSettings({ clauseItemsPerLine })}
+        />
+        <Segmented
+          name="theme"
+          legend="배경"
+          value={settings.theme}
+          options={[
+            { value: "dark", label: "검정" },
+            { value: "light", label: "흰색" },
+          ]}
+          onChange={(theme) => updateSettings({ theme })}
         />
         <button className="reset" type="button" onClick={() => setSettings({ ...defaultSettings })}>
           기본값
@@ -221,23 +225,16 @@ export default function Workbench() {
         </div>
         <div className="pane result">
           <div className="pane-head">
-            <strong>정렬 결과</strong>
-            <span>{outputCount}</span>
+            <strong>{view === "skeleton" ? "분석" : "정렬 결과"}</strong>
+            <span>{view === "result" ? outputCount : ""}</span>
           </div>
-          <textarea
-            ref={outputRef}
-            aria-label="정렬 결과"
-            value={output}
-            readOnly
-            placeholder="정렬된 쿼리가 여기에 표시됩니다."
-            spellCheck={false}
-            wrap="off"
-            style={{ tabSize: defaultSettings.tabWidth }}
-          />
+          {view === "skeleton" ? (
+            <AnalysisPanel source={source} letterCase={settings.letterCase} onClose={() => setView("result")} />
+          ) : (
+            <RegionPanel sql={output} />
+          )}
         </div>
       </section>
-
-      {analysisOpen && <AnalysisPanel source={source} onClose={() => setAnalysisOpen(false)} />}
 
       <footer className="status">
         <p className={`message ${message.tone}`} role="status">

@@ -5,12 +5,16 @@ export type ExpressionWidth = 10 | 50 | 80 | 120;
 export type ItemsPerLine = 1 | 2 | 3 | 5 | 10;
 export type TabWidth = 0 | 1 | 2 | 4;
 
+export type ThemeName = "dark" | "light";
+
 export type FormatterSettings = {
   letterCase: LetterCase;
   tabWidth: TabWidth;
   expressionWidth: ExpressionWidth;
   selectItemsPerLine: ItemsPerLine;
+  fromItemsPerLine: ItemsPerLine;
   clauseItemsPerLine: ItemsPerLine;
+  theme: ThemeName;
 };
 
 export const defaultSettings: FormatterSettings = {
@@ -18,7 +22,9 @@ export const defaultSettings: FormatterSettings = {
   tabWidth: 2,
   expressionWidth: 80,
   selectItemsPerLine: 1,
+  fromItemsPerLine: 1,
   clauseItemsPerLine: 5,
+  theme: "dark",
 };
 
 /**
@@ -41,6 +47,7 @@ const extraOracleWords = new Set([
 ]);
 
 const letterCases = ["preserve", "upper", "lower"] as const;
+const themeNames = ["dark", "light"] as const;
 const itemsPerLineOptions = [1, 2, 3, 5, 10] as const;
 const tabWidths = [0, 1, 2, 4] as const;
 const expressionWidths = [10, 50, 80, 120] as const;
@@ -75,7 +82,9 @@ export function sanitizeSettings(value: unknown): FormatterSettings {
     selectItemsPerLine: isItemsPerLine(raw.selectItemsPerLine)
       ? raw.selectItemsPerLine
       : defaultSettings.selectItemsPerLine,
+    fromItemsPerLine: isItemsPerLine(raw.fromItemsPerLine) ? raw.fromItemsPerLine : defaultSettings.fromItemsPerLine,
     clauseItemsPerLine: isItemsPerLine(storedClause) ? storedClause : defaultSettings.clauseItemsPerLine,
+    theme: isOneOf(raw.theme, themeNames) ? raw.theme : defaultSettings.theme,
   };
 }
 
@@ -368,7 +377,8 @@ function polish(sql: string, settings: FormatterSettings): string {
   const collapsed = collapseSimpleParenGroups(collapseParenOrs(cased));
   const indented = indentInlineViews(collapsed, settings.tabWidth);
   const packed = packClauseLists(indented, settings.clauseItemsPerLine);
-  return formatSelectColumns(packed, settings.selectItemsPerLine);
+  const selected = formatSelectColumns(packed, settings.selectItemsPerLine);
+  return packFromLists(selected, settings.fromItemsPerLine);
 }
 
 /** 블록 주석 안의 줄바꿈을 없애 한 줄로 붙인다. 문자열 안의 주석 모양은 그대로 둔다. */
@@ -654,6 +664,149 @@ function nextContentLine(lines: string[], start: number, end: number): number {
     if (lines[line].trim()) return line;
   }
   return -1;
+}
+
+function packFromLists(sql: string, itemsPerLine: number): string {
+  const clauses = fromStarts(sql);
+
+  for (let cursor = clauses.length - 1; cursor >= 0; cursor -= 1) {
+    const clause = clauses[cursor];
+    const read = readFromItems(sql, clause.index + clause.keyword.length);
+    if (read.items.length === 0) continue;
+
+    const lineStart = sql.lastIndexOf("\n", clause.index - 1) + 1;
+    const keywordColumn = clause.index - lineStart;
+    const packed = packFromItems(keywordColumn, clause.keyword, read.items, itemsPerLine);
+    sql = sql.slice(0, lineStart) + packed + sql.slice(read.end);
+  }
+
+  return sql;
+}
+
+function fromStarts(sql: string): { index: number; keyword: string }[] {
+  const found: { index: number; keyword: string }[] = [];
+  let index = 0;
+  let atLineStart = true;
+
+  while (index < sql.length) {
+    const skipped = skipLiteral(sql, index);
+    if (skipped > index) {
+      atLineStart = sql.slice(index, skipped).endsWith("\n");
+      index = skipped;
+      continue;
+    }
+
+    const char = sql[index];
+    if (char === "\n") {
+      atLineStart = true;
+      index += 1;
+      continue;
+    }
+
+    if (atLineStart && /\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    if (atLineStart && isKeywordAt(sql, index, "FROM")) found.push({ index, keyword: sql.slice(index, index + 4) });
+    atLineStart = false;
+    index += 1;
+  }
+
+  return found;
+}
+
+function readFromItems(sql: string, start: number): { items: { text: string; simple: boolean }[]; end: number } {
+  let index = start;
+  let depth = 0;
+  let current = "";
+  const items: { text: string; simple: boolean }[] = [];
+
+  const push = () => {
+    const trimmed = current.trim();
+    if (!trimmed) {
+      current = "";
+      return;
+    }
+    const simple = !trimmed.includes("\n");
+    items.push({ text: simple ? flattenSqlWhitespace(trimmed) : trimmed, simple });
+    current = "";
+  };
+
+  while (index < sql.length) {
+    const skipped = skipLiteral(sql, index);
+    if (skipped > index) {
+      current += sql.slice(index, skipped);
+      index = skipped;
+      continue;
+    }
+
+    const char = sql[index];
+    if (char === "(") {
+      depth += 1;
+      current += char;
+      index += 1;
+      continue;
+    }
+    if (char === ")") {
+      if (depth === 0) break;
+      depth -= 1;
+      current += char;
+      index += 1;
+      continue;
+    }
+    if (char === ";" && depth === 0) break;
+    if (char === "," && depth === 0) {
+      push();
+      index += 1;
+      continue;
+    }
+    if (char === "\n" && depth === 0 && isNextClause(sql.slice(index + 1))) break;
+
+    current += char;
+    index += 1;
+  }
+
+  push();
+  return { items, end: index };
+}
+
+function packFromItems(
+  keywordColumn: number,
+  keyword: string,
+  items: { text: string; simple: boolean }[],
+  perLine: number,
+): string {
+  const itemColumn = keywordColumn + keyword.length + 1;
+  const size = Math.max(1, perLine);
+  const lines: string[] = [];
+  let bucket: string[] = [];
+
+  const flush = (last: boolean) => {
+    if (bucket.length === 0) return;
+    const text = bucket.join(", ") + (last ? "" : ",");
+    if (lines.length === 0) lines.push(`${" ".repeat(keywordColumn)}${keyword} ${text}`);
+    else lines.push(`${" ".repeat(itemColumn)}${text}`);
+    bucket = [];
+  };
+
+  items.forEach((item, index) => {
+    const last = index === items.length - 1;
+    if (!item.simple) {
+      flush(false);
+      const parts = item.text.split("\n");
+      const head = `${lines.length === 0 ? `${" ".repeat(keywordColumn)}${keyword} ` : `${" ".repeat(itemColumn)}`}${parts[0].trim()}`;
+      lines.push(head);
+      for (const extra of parts.slice(1)) lines.push(extra.replace(/[ \t]+$/, ""));
+      if (!last) lines[lines.length - 1] = `${lines[lines.length - 1].replace(/[ \t]+$/, "")},`;
+      return;
+    }
+
+    bucket.push(item.text);
+    if (bucket.length === size || last) flush(last);
+  });
+
+  return lines.join("\n");
 }
 
 function packClauseLists(sql: string, itemsPerLine: number): string {
