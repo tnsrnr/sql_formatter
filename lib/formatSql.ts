@@ -3,7 +3,7 @@ import { alignInsert } from "./insertSql";
 
 export type LetterCase = KeywordCase;
 export type ExpressionWidth = 10 | 50 | 80 | 120;
-export type ItemsPerLine = 1 | 2 | 3 | 5 | 10;
+export type ItemsPerLine = 1 | 2 | 3 | 5 | "all";
 export type TabWidth = 0 | 1 | 2 | 4;
 
 export type ThemeName = "dark" | "light";
@@ -25,7 +25,7 @@ export const defaultSettings: FormatterSettings = {
   selectItemsPerLine: 1,
   fromItemsPerLine: 1,
   clauseItemsPerLine: 5,
-  theme: "dark",
+  theme: "light",
 };
 
 /**
@@ -49,7 +49,7 @@ const extraOracleWords = new Set([
 
 const letterCases = ["preserve", "upper", "lower"] as const;
 const themeNames = ["dark", "light"] as const;
-const itemsPerLineOptions = [1, 2, 3, 5, 10] as const;
+const itemsPerLineOptions = [1, 2, 3, 5] as const;
 const tabWidths = [0, 1, 2, 4] as const;
 const expressionWidths = [10, 50, 80, 120] as const;
 
@@ -61,8 +61,14 @@ function isExpressionWidth(value: unknown): value is ExpressionWidth {
   return typeof value === "number" && (expressionWidths as readonly number[]).includes(value);
 }
 
-function isItemsPerLine(value: unknown): value is ItemsPerLine {
-  return typeof value === "number" && (itemsPerLineOptions as readonly number[]).includes(value);
+function readItemsPerLine(value: unknown, fallback: ItemsPerLine): ItemsPerLine {
+  if (value === "all" || value === 10) return "all";
+  if (typeof value === "number" && (itemsPerLineOptions as readonly number[]).includes(value)) return value as ItemsPerLine;
+  return fallback;
+}
+
+function resolveItemsPerLine(value: ItemsPerLine): number {
+  return value === "all" ? Number.MAX_SAFE_INTEGER : value;
 }
 
 function isTabWidth(value: unknown): value is TabWidth {
@@ -80,11 +86,9 @@ export function sanitizeSettings(value: unknown): FormatterSettings {
     expressionWidth: isExpressionWidth(raw.expressionWidth)
       ? raw.expressionWidth
       : defaultSettings.expressionWidth,
-    selectItemsPerLine: isItemsPerLine(raw.selectItemsPerLine)
-      ? raw.selectItemsPerLine
-      : defaultSettings.selectItemsPerLine,
-    fromItemsPerLine: isItemsPerLine(raw.fromItemsPerLine) ? raw.fromItemsPerLine : defaultSettings.fromItemsPerLine,
-    clauseItemsPerLine: isItemsPerLine(storedClause) ? storedClause : defaultSettings.clauseItemsPerLine,
+    selectItemsPerLine: readItemsPerLine(raw.selectItemsPerLine, defaultSettings.selectItemsPerLine),
+    fromItemsPerLine: readItemsPerLine(raw.fromItemsPerLine, defaultSettings.fromItemsPerLine),
+    clauseItemsPerLine: readItemsPerLine(storedClause, defaultSettings.clauseItemsPerLine),
     theme: isOneOf(raw.theme, themeNames) ? raw.theme : defaultSettings.theme,
   };
 }
@@ -383,9 +387,9 @@ function polish(sql: string, settings: FormatterSettings): string {
   const cased = applyExtraOracleWords(sql, settings.letterCase);
   const collapsed = collapseSimpleParenGroups(collapseParenOrs(cased));
   const indented = indentInlineViews(collapsed, settings.tabWidth);
-  const packed = packClauseLists(indented, settings.clauseItemsPerLine);
-  const selected = formatSelectColumns(packed, settings.selectItemsPerLine);
-  return packFromLists(selected, settings.fromItemsPerLine);
+  const packed = packClauseLists(indented, resolveItemsPerLine(settings.clauseItemsPerLine));
+  const selected = formatSelectColumns(packed, resolveItemsPerLine(settings.selectItemsPerLine));
+  return packFromLists(selected, resolveItemsPerLine(settings.fromItemsPerLine));
 }
 
 /** 블록 주석 안의 줄바꿈을 없애 한 줄로 붙인다. 문자열 안의 주석 모양은 그대로 둔다. */

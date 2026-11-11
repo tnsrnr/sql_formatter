@@ -30,6 +30,8 @@ export default function Workbench() {
   const [view, setView] = useState<"result" | "skeleton">("result");
 
   const sourceRef = useRef(source);
+  const resultRef = useRef<HTMLDivElement>(null);
+  const resultHover = useRef(false);
   const copyTimer = useRef<number | null>(null);
   const skipSettings = useRef(true);
 
@@ -85,6 +87,23 @@ export default function Workbench() {
     return () => {
       if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
     };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.code !== "KeyA" || event.shiftKey || event.altKey || (!event.ctrlKey && !event.metaKey)) return;
+      const pane = resultRef.current;
+      if (!pane || !resultHover.current) return;
+      event.preventDefault();
+      const selection = window.getSelection();
+      if (!selection) return;
+      const range = document.createRange();
+      range.selectNodeContents(pane);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   function updateSettings(patch: Partial<FormatterSettings>) {
@@ -228,11 +247,22 @@ export default function Workbench() {
             <strong>{view === "skeleton" ? "분석" : "정렬 결과"}</strong>
             <span>{view === "result" ? outputCount : ""}</span>
           </div>
-          {view === "skeleton" ? (
-            <AnalysisPanel source={source} settings={settings} onClose={() => setView("result")} />
-          ) : (
-            <RegionPanel sql={output} />
-          )}
+          <div
+            className="result-body"
+            ref={resultRef}
+            onMouseEnter={() => {
+              resultHover.current = true;
+            }}
+            onMouseLeave={() => {
+              resultHover.current = false;
+            }}
+          >
+            {view === "skeleton" ? (
+              <AnalysisPanel source={source} settings={settings} onClose={() => setView("result")} />
+            ) : (
+              <RegionPanel sql={output} />
+            )}
+          </div>
         </div>
       </section>
 
@@ -256,10 +286,10 @@ function ItemCount({
   value: ItemsPerLine;
   onChange: (value: ItemsPerLine) => void;
 }) {
-  const options = [1, 2, 3, 5, 10].map((count) => ({
-    value: String(count),
-    label: `${count}개`,
-  }));
+  const options = [
+    ...([1, 2, 3, 5] as const).map((count) => ({ value: String(count), label: `${count}개` })),
+    { value: "all", label: "전체" },
+  ];
 
   return (
     <Segmented
@@ -267,7 +297,7 @@ function ItemCount({
       legend={legend}
       value={String(value)}
       options={options}
-      onChange={(next) => onChange(Number(next) as ItemsPerLine)}
+      onChange={(next) => onChange(next === "all" ? "all" : (Number(next) as ItemsPerLine))}
     />
   );
 }
