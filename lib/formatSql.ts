@@ -1,4 +1,5 @@
 import { format, type KeywordCase } from "sql-formatter";
+import { formatJoinLayout } from "./formatJoins";
 import { alignInsert } from "./insertSql";
 
 export type LetterCase = KeywordCase;
@@ -389,7 +390,7 @@ function polish(sql: string, settings: FormatterSettings): string {
   const indented = indentInlineViews(collapsed, settings.tabWidth);
   const packed = packClauseLists(indented, resolveItemsPerLine(settings.clauseItemsPerLine));
   const selected = formatSelectColumns(packed, resolveItemsPerLine(settings.selectItemsPerLine));
-  return packFromLists(selected, resolveItemsPerLine(settings.fromItemsPerLine));
+  return formatJoinLayout(packFromLists(selected, resolveItemsPerLine(settings.fromItemsPerLine)));
 }
 
 /** 블록 주석 안의 줄바꿈을 없애 한 줄로 붙인다. 문자열 안의 주석 모양은 그대로 둔다. */

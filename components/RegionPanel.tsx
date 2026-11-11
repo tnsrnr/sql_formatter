@@ -127,7 +127,7 @@ function paintSql(sql: string): ReactNode[] {
 function clauseAt(sql: string, index: number): string | null {
   const previous = index > 0 ? sql[index - 1] : "";
   if (previous && /[A-Za-z0-9_$#]/.test(previous)) return null;
-  return /^(SELECT|FROM|GROUP[ \t]+BY|ORDER[ \t]+BY)(?![A-Za-z0-9_$#])/i.exec(sql.slice(index))?.[0] ?? null;
+  return /^(LEFT[ \t]+OUTER[ \t]+JOIN|RIGHT[ \t]+OUTER[ \t]+JOIN|FULL[ \t]+OUTER[ \t]+JOIN|INNER[ \t]+JOIN|CROSS[ \t]+JOIN|NATURAL[ \t]+JOIN|FULL[ \t]+JOIN|LEFT[ \t]+JOIN|RIGHT[ \t]+JOIN|GROUP[ \t]+BY|ORDER[ \t]+BY|SELECT|FROM|WHERE|JOIN|ON|AND|OR)(?![A-Za-z0-9_$#])/i.exec(sql.slice(index))?.[0] ?? null;
 }
 
 function edgeOf(depths: number[], index: number, level: number): "start" | "mid" | "end" | "only" {
